@@ -28,3 +28,13 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# 
+.flutter*
+*/firebase*
+.dart_tool/
+*/.packages
+*/.pub-cache
+*/.pub
+*/.idea
+*/.vscode

@@ -1,5 +1,12 @@
+import 'dart:convert';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:heart/common/utils.dart';
+import 'package:heart/screens/dashboard.dart';
 import 'package:heart/screens/ecg_details.dart';
+import 'package:heart/user_auth/auth_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class DeviceList extends StatefulWidget {
   const DeviceList({super.key});
@@ -9,12 +16,60 @@ class DeviceList extends StatefulWidget {
 }
 
 class _DeviceListState extends State<DeviceList> {
+  final FirebaseAuthService _auth = FirebaseAuthService();
   late double screenWidth;
+  bool isLoading = false;
 
   @override
   Widget build(BuildContext context) {
     screenWidth = MediaQuery.of(context).size.width;
     return _mainLayout();
+  }
+
+  Future<void> saveList(List<Map<String, String>> list) async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('credentials', jsonEncode(list));
+  }
+
+  Future<List<Map<String, String>>> getList() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    String? jsonString = prefs.getString('credentials');
+    if (jsonString != null) {
+      List<dynamic> list = jsonDecode(jsonString);
+      List<Map<String, String>> jsonList = list.map((item) {
+        return Map<String, String>.from(item);
+      }).toList();
+      return jsonList;
+    } else {
+      return [];
+    }
+  }
+
+  void _signIn(email, password) async {
+    setState(() {
+      isLoading = true;
+    });
+    User? user =
+        await _auth.signInWithEmailAndPassword(email + "@gmail.com", password);
+    if (user != null) {
+      List<Map<String, String>> list = await getList();
+      list.removeWhere((item) => item["device"] == email);
+      DateTime now = DateTime.now();
+      Map<String, String> data = {
+        'device': email,
+        'password': password,
+        'lastaccess': '${now.year}/${now.month}/${now.day}',
+      };
+      list.add(data);
+      saveList(list);
+
+      navigatorKey.currentState!.push(
+        MaterialPageRoute(builder: (context) => ECGDetails(deviceId: email)),
+      );
+    }
+    setState(() {
+      isLoading = false;
+    });
   }
 
   // main layout
@@ -23,23 +78,62 @@ class _DeviceListState extends State<DeviceList> {
       child: Padding(
         padding: const EdgeInsets.all(8.0),
         child: SizedBox(
-          width: screenWidth,
-          child: Column(
-            children: [
-              _noDeviceAvailable(),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 15.0),
-                child: Column(
-                  children: [
-                    _deviceCard("Heart007", "2024/01/24"),
-                    _deviceCard("Heart008", "2024/01/24"),
-                  ],
-                ),
-              ),
-              _addDevice()
-            ],
-          ),
-        ),
+            width: screenWidth,
+            child: Stack(
+              children: [
+                // device list
+                if (!isLoading)
+                  Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 15.0),
+                        child: Column(
+                          children: [
+                            FutureBuilder<List<Map<String, String>>>(
+                              future: getList(),
+                              builder: (BuildContext context,
+                                  AsyncSnapshot<List<Map<String, String>>>
+                                      snapshot) {
+                                if (snapshot.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const CircularProgressIndicator();
+                                } else if (snapshot.hasError) {
+                                  return Text(
+                                    'Error: ${snapshot.error}',
+                                  );
+                                } else if (snapshot.data!.isEmpty) {
+                                  return _noDeviceAvailable();
+                                } else {
+                                  return Column(
+                                    children: snapshot.data!
+                                        .map((item) => _deviceCard(
+                                            item['device'].toString(),
+                                            item['password'].toString(),
+                                            item['lastaccess'].toString()))
+                                        .toList(),
+                                  );
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      _addDevice()
+                    ],
+                  ),
+                // loading indicator
+                if (isLoading)
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height - 200,
+                    width: MediaQuery.of(context).size.width,
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [CircularProgressIndicator()],
+                    ),
+                  ),
+              ],
+            )),
       ),
     );
   }
@@ -116,7 +210,7 @@ class _DeviceListState extends State<DeviceList> {
   }
 
   // device card
-  Widget _deviceCard(String device, String lastActive) {
+  Widget _deviceCard(String device, String password, String lastActive) {
     return Card(
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.all(
@@ -172,7 +266,8 @@ class _DeviceListState extends State<DeviceList> {
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.redAccent.shade700,
                           side: const BorderSide(
-                              color: Colors.red), // Border color
+                            color: Colors.red,
+                          ), // Border color
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(20.0),
                             // Adjust the border radius as needed
@@ -201,14 +296,7 @@ class _DeviceListState extends State<DeviceList> {
                         ),
                       ),
                       onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => ECGDetails(
-                              deviceId: device,
-                            ),
-                          ),
-                        );
+                        _signIn(device, password);
                       },
                       //
                       child: const Text("View"),
@@ -251,15 +339,23 @@ class _DeviceListState extends State<DeviceList> {
         );
       },
     ).then(
-      (result) {
+      (result) async {
         // Handle the result after the dialog is closed
         if (result != null && result is bool) {
           if (result) {
             // Handle 'Yes' action
+            List<Map<String, String>> newList = await getList();
+            newList.removeWhere((item) => item["device"] == device);
+            saveList(newList);
           }
         }
       },
-    );
+    ).then((value) => {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const Dashboard()),
+          )
+        });
   }
 
   // show login dialog
@@ -312,9 +408,9 @@ class _DeviceListState extends State<DeviceList> {
         if (result != null && result is bool) {
           if (result) {
             // Handle 'Yes' action
-            String username = deviceIDController.text;
+            String email = deviceIDController.text;
             String password = passwordController.text;
-            print('Username: $username, Password: $password');
+            _signIn(email, password);
           }
         }
       },
